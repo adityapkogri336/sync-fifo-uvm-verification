@@ -14,7 +14,7 @@ package fifo_pkg;
         endfunction
     endclass
 
-    // ---------------- Sequence ----------------
+    // ---------------- Write Sequence ----------------
     class fifo_write_sequence extends uvm_sequence #(fifo_transaction);
         `uvm_object_utils(fifo_write_sequence)
 
@@ -29,6 +29,25 @@ package fifo_pkg;
                 start_item(tr);
                 assert(tr.randomize());
                 tr.is_write = 1;
+                finish_item(tr);
+            end
+        endtask
+    endclass
+
+    // ---------------- Read Sequence ----------------
+    class fifo_read_sequence extends uvm_sequence #(fifo_transaction);
+        `uvm_object_utils(fifo_read_sequence)
+
+        function new(string name = "fifo_read_sequence");
+            super.new(name);
+        endfunction
+
+        task body();
+            fifo_transaction tr;
+            repeat (3) begin
+                tr = fifo_transaction::type_id::create("tr");
+                start_item(tr);
+                tr.is_write = 0;   // no randomize() needed — data field is irrelevant for a read request
                 finish_item(tr);
             end
         endtask
@@ -52,9 +71,12 @@ package fifo_pkg;
 
         task run_phase(uvm_phase phase);
             fifo_transaction tr;
+            @(posedge vif.rst_n);   // wait until reset is fully released
+            @(posedge vif.clk);     // let one clean clock edge pass before driving anything
             forever begin
                 seq_item_port.get_next_item(tr);
                 @(posedge vif.clk);
+                #1;   // avoid racing with the DUT, which samples wr_en/rd_en on this same edge
                 if (tr.is_write) begin
                     vif.wr_en   = 1;
                     vif.wr_data = tr.data;
@@ -62,6 +84,7 @@ package fifo_pkg;
                     vif.rd_en = 1;
                 end
                 @(posedge vif.clk);
+                #1;
                 vif.wr_en = 0;
                 vif.rd_en = 0;
                 seq_item_port.item_done();
@@ -89,15 +112,24 @@ package fifo_pkg;
 
         task run_phase(uvm_phase phase);
             fifo_transaction tr;
+            bit wr_en_s, rd_en_s, full_s, empty_s;
+            @(posedge vif.rst_n);   // don't observe anything until reset is fully released
             forever begin
                 @(posedge vif.clk);
-                if (vif.wr_en && !vif.full) begin
+                // Capture control/status signals exactly as the DUT saw them for THIS edge,
+                // before this same edge's own pointer updates can change full/empty.
+                wr_en_s = vif.wr_en;
+                rd_en_s = vif.rd_en;
+                full_s  = vif.full;
+                empty_s = vif.empty;
+                #1;   // now let data outputs (rd_data) settle
+                if (wr_en_s && !full_s) begin
                     tr = fifo_transaction::type_id::create("tr");
                     tr.is_write = 1;
                     tr.data     = vif.wr_data;
                     ap.write(tr);
                 end
-                if (vif.rd_en && !vif.empty) begin
+                if (rd_en_s && !empty_s) begin
                     tr = fifo_transaction::type_id::create("tr");
                     tr.is_write = 0;
                     tr.data     = vif.rd_data;
@@ -200,10 +232,17 @@ package fifo_pkg;
         endfunction
 
         task run_phase(uvm_phase phase);
-            fifo_write_sequence seq;
+            fifo_write_sequence wr_seq;
+            fifo_read_sequence  rd_seq;
             phase.raise_objection(this);
-            seq = fifo_write_sequence::type_id::create("seq");
-            seq.start(env.agt.seqr);
+
+            wr_seq = fifo_write_sequence::type_id::create("wr_seq");
+            wr_seq.start(env.agt.seqr);
+
+            rd_seq = fifo_read_sequence::type_id::create("rd_seq");
+            rd_seq.start(env.agt.seqr);
+
+            #100;   // give the monitor time to observe the final transaction before ending
             phase.drop_objection(this);
         endtask
     endclass
