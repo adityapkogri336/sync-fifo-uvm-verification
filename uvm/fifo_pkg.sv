@@ -5,7 +5,12 @@ package fifo_pkg;
     // ---------------- Transaction ----------------
     class fifo_transaction extends uvm_sequence_item;
         rand bit [7:0] data;
-        bit is_write;   // 1 = write operation, 0 = read operation
+        rand bit is_write;   // 1 = write operation, 0 = read operation
+
+        // Weight writes more heavily (60%) so reads usually have something to consume
+        constraint is_write_dist {
+            is_write dist { 1 := 60, 0 := 40 };
+        }
 
         `uvm_object_utils(fifo_transaction)
 
@@ -48,6 +53,25 @@ package fifo_pkg;
                 tr = fifo_transaction::type_id::create("tr");
                 start_item(tr);
                 tr.is_write = 0;   // no randomize() needed — data field is irrelevant for a read request
+                finish_item(tr);
+            end
+        endtask
+    endclass
+
+    // ---------------- Random Mixed Sequence ----------------
+    class fifo_random_sequence extends uvm_sequence #(fifo_transaction);
+        `uvm_object_utils(fifo_random_sequence)
+
+        function new(string name = "fifo_random_sequence");
+            super.new(name);
+        endfunction
+
+        task body();
+            fifo_transaction tr;
+            repeat (20) begin
+                tr = fifo_transaction::type_id::create("tr");
+                start_item(tr);
+                assert(tr.randomize());   // randomizes BOTH data and is_write now
                 finish_item(tr);
             end
         endtask
@@ -232,15 +256,21 @@ package fifo_pkg;
         endfunction
 
         task run_phase(uvm_phase phase);
-            fifo_write_sequence wr_seq;
-            fifo_read_sequence  rd_seq;
+            fifo_write_sequence  wr_seq;
+            fifo_read_sequence   rd_seq;
+            fifo_random_sequence rand_seq;
             phase.raise_objection(this);
 
+            // Directed portion: known, predictable ordering (good for basic sanity)
             wr_seq = fifo_write_sequence::type_id::create("wr_seq");
             wr_seq.start(env.agt.seqr);
 
             rd_seq = fifo_read_sequence::type_id::create("rd_seq");
             rd_seq.start(env.agt.seqr);
+
+            // Random portion: unpredictable mix, stress-testing corner cases
+            rand_seq = fifo_random_sequence::type_id::create("rand_seq");
+            rand_seq.start(env.agt.seqr);
 
             #100;   // give the monitor time to observe the final transaction before ending
             phase.drop_objection(this);
