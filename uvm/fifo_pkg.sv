@@ -77,6 +77,27 @@ package fifo_pkg;
         endtask
     endclass
 
+    // ---------------- Fill Sequence (forces full=1, closing the coverage hole) ----------------
+    class fifo_fill_sequence extends uvm_sequence #(fifo_transaction);
+        `uvm_object_utils(fifo_fill_sequence)
+
+        function new(string name = "fifo_fill_sequence");
+            super.new(name);
+        endfunction
+
+        task body();
+            fifo_transaction tr;
+            // DEPTH writes back-to-back, no reads in between, guarantees full=1 at least once
+            repeat (8) begin
+                tr = fifo_transaction::type_id::create("tr");
+                start_item(tr);
+                assert(tr.randomize());
+                tr.is_write = 1;
+                finish_item(tr);
+            end
+        endtask
+    endclass
+
     // ---------------- Driver ----------------
     class fifo_driver extends uvm_driver #(fifo_transaction);
         `uvm_component_utils(fifo_driver)
@@ -194,6 +215,53 @@ package fifo_pkg;
         endfunction
     endclass
 
+    // ---------------- Coverage Collector ----------------
+    class fifo_coverage extends uvm_component;
+        `uvm_component_utils(fifo_coverage)
+
+        virtual fifo_if vif;
+
+        covergroup cg;
+            option.per_instance = 1;
+            cp_wr_en: coverpoint vif.wr_en;
+            cp_rd_en: coverpoint vif.rd_en;
+            cp_full:  coverpoint vif.full;
+            cp_empty: coverpoint vif.empty;
+            cross_full_wr:  cross cp_full, cp_wr_en;
+            cross_empty_rd: cross cp_empty, cp_rd_en;
+        endgroup
+
+        function new(string name, uvm_component parent);
+            super.new(name, parent);
+            cg = new();
+        endfunction
+
+        function void build_phase(uvm_phase phase);
+            super.build_phase(phase);
+            if (!uvm_config_db#(virtual fifo_if)::get(this, "", "vif", vif))
+                `uvm_fatal("NOVIF", "Virtual interface not found for coverage")
+        endfunction
+
+        task run_phase(uvm_phase phase);
+            @(posedge vif.rst_n);
+            forever begin
+                @(posedge vif.clk);
+                #1;
+                cg.sample();
+            end
+        endtask
+
+        function void report_phase(uvm_phase phase);
+            `uvm_info("COVERAGE", $sformatf("Overall functional coverage: %0.2f%%", cg.get_coverage()), UVM_LOW)
+            `uvm_info("COVERAGE", $sformatf("  cp_wr_en        : %0.2f%%", cg.cp_wr_en.get_coverage()), UVM_LOW)
+            `uvm_info("COVERAGE", $sformatf("  cp_rd_en        : %0.2f%%", cg.cp_rd_en.get_coverage()), UVM_LOW)
+            `uvm_info("COVERAGE", $sformatf("  cp_full         : %0.2f%%", cg.cp_full.get_coverage()), UVM_LOW)
+            `uvm_info("COVERAGE", $sformatf("  cp_empty        : %0.2f%%", cg.cp_empty.get_coverage()), UVM_LOW)
+            `uvm_info("COVERAGE", $sformatf("  cross_full_wr   : %0.2f%%", cg.cross_full_wr.get_coverage()), UVM_LOW)
+            `uvm_info("COVERAGE", $sformatf("  cross_empty_rd  : %0.2f%%", cg.cross_empty_rd.get_coverage()), UVM_LOW)
+        endfunction
+    endclass
+
     // ---------------- Agent ----------------
     class fifo_agent extends uvm_agent;
         `uvm_component_utils(fifo_agent)
@@ -224,6 +292,7 @@ package fifo_pkg;
 
         fifo_agent      agt;
         fifo_scoreboard sb;
+        fifo_coverage   cov;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
@@ -233,6 +302,7 @@ package fifo_pkg;
             super.build_phase(phase);
             agt = fifo_agent::type_id::create("agt", this);
             sb  = fifo_scoreboard::type_id::create("sb", this);
+            cov = fifo_coverage::type_id::create("cov", this);
         endfunction
 
         function void connect_phase(uvm_phase phase);
@@ -259,18 +329,21 @@ package fifo_pkg;
             fifo_write_sequence  wr_seq;
             fifo_read_sequence   rd_seq;
             fifo_random_sequence rand_seq;
+            fifo_fill_sequence   fill_seq;
             phase.raise_objection(this);
 
-            // Directed portion: known, predictable ordering (good for basic sanity)
             wr_seq = fifo_write_sequence::type_id::create("wr_seq");
             wr_seq.start(env.agt.seqr);
 
             rd_seq = fifo_read_sequence::type_id::create("rd_seq");
             rd_seq.start(env.agt.seqr);
 
-            // Random portion: unpredictable mix, stress-testing corner cases
             rand_seq = fifo_random_sequence::type_id::create("rand_seq");
             rand_seq.start(env.agt.seqr);
+
+            // Directed: deliberately force full=1, since random alone didn't reach it
+            fill_seq = fifo_fill_sequence::type_id::create("fill_seq");
+            fill_seq.start(env.agt.seqr);
 
             #100;   // give the monitor time to observe the final transaction before ending
             phase.drop_objection(this);
