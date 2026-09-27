@@ -1,14 +1,14 @@
-# Synchronous FIFO — UVM Verification Project
+# Synchronous FIFO - UVM Verification Project
 
 A synchronous FIFO designed in Verilog and verified using a full UVM (Universal Verification Methodology) testbench, including directed tests, constrained-random stimulus, functional coverage, and SystemVerilog Assertions (SVA).
 
 ## Overview
 
-This project implements an 8-deep, 8-bit-wide synchronous FIFO and builds a complete, reusable verification environment around it — the same architecture used in industry to verify hardware blocks before they go to silicon. The goal was to go beyond "does it work once" and build a verification environment that can catch bugs an ad-hoc test would miss: overflow/underflow corruption, race conditions between the driver and DUT, and structural protocol violations.
+This project implements an 8-deep, 8-bit-wide synchronous FIFO and builds a complete, reusable verification environment around it - the same architecture used in industry to verify hardware blocks before they go to silicon. The goal was to go beyond "does it work once" and build a verification environment that can catch bugs an ad-hoc test would miss: overflow/underflow corruption, race conditions between the driver and DUT, and structural protocol violations.
 
 ## Design Under Test (DUT)
 
-`rtl/sync_fifo.v` — a parameterized synchronous FIFO:
+`rtl/sync_fifo.v` - a parameterized synchronous FIFO:
 - Configurable `DEPTH` (default 8) and `WIDTH` (default 8)
 - Write and read pointers each carry one extra "wrap" bit beyond what's needed to index the memory, which is what makes it possible to distinguish a completely full FIFO from a completely empty one when both pointers land on the same index
 - `full` and `empty` are combinationally derived from the two pointers
