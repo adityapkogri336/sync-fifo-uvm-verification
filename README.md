@@ -44,17 +44,17 @@ Three properties, checked on every clock cycle independent of any test sequence:
 2. A write attempt while `full` must never actually change FIFO state
 3. A read attempt while `empty` must never actually change FIFO state
 
-These are bound to the DUT from an external module using `bind`, so the RTL source stays untouched — the checker can be reused with any testbench.
+These are bound to the DUT from an external module using `bind`, so the RTL source stays untouched - the checker can be reused with any testbench.
 
 ## Verification Methodology
 
 The project follows a standard coverage-driven verification flow:
 
-1. **Directed testing** — hand-written sequences exercise the basic write/read path and explicit overflow/underflow corner cases.
-2. **Constrained-random testing** — a weighted-random sequence generates realistic mixed traffic, catching interactions directed tests wouldn't think to write.
-3. **Functional coverage** — measures whether random+directed testing actually reached every interesting state, including the dangerous cross of `(full=1, wr_en=1)` and `(empty=1, rd_en=1)`.
-4. **Coverage-driven test writing** — random testing alone reached only 83.33% coverage (the FIFO was never actually driven to `full`); a new directed `fifo_fill_sequence` was written specifically to close that gap, reaching 100%.
-5. **Assertion-based checking** — independent of the scoreboard, SVA continuously checks that the DUT never violates its own structural contract.
+1. **Directed testing** - handwritten sequences exercise the basic write/read path and explicit overflow/underflow corner cases.
+2. **Constrained-random testing** - a weighted-random sequence generates realistic mixed traffic, catching interactions directed tests wouldn't think to write.
+3. **Functional coverage** - measures whether random+directed testing actually reached every interesting state, including the dangerous cross of `(full=1, wr_en=1)` and `(empty=1, rd_en=1)`.
+4. **Coverage-driven test writing** - random testing alone reached only 83.33% coverage (the FIFO was never actually driven to `full`); a new directed `fifo_fill_sequence` was written specifically to close that gap, reaching 100%.
+5. **Assertion-based checking** - independent of the scoreboard, SVA continuously checks that the DUT never violates its own structural contract.
 
 Final result: **100% functional coverage across all coverpoints and crosses, 0 scoreboard errors, 0 assertion violations**, verified on Cadence Xcelium 25.03.
 
@@ -66,7 +66,7 @@ Building this environment surfaced four real timing/race-condition bugs, each di
 - A monitor sampling `rd_data` before the DUT's non-blocking assignment had settled
 - A monitor status-flag race where `empty` transitioning on the same edge as a successful read caused that read to be silently dropped
 
-Each was root-caused and fixed with an understanding of SystemVerilog's non-blocking assignment semantics, not trial and error.
+Each was root caused and fixed with an understanding of SystemVerilog's non-blocking assignment semantics, not trial and error.
 
 ## Running the Tests
 
