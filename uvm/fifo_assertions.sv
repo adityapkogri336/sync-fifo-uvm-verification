@@ -1,12 +1,7 @@
-// ============================================================
 // fifo_assertions.sv
-//
-// SystemVerilog Assertions (SVA) checker for sync_fifo.
-// Kept completely separate from the RTL file and attached from
-// the outside using `bind`, so the DUT source (sync_fifo.v) is
-// never touched. This lets the same checker be reused with any
-// testbench (UVM or otherwise) that instantiates sync_fifo.
-// ============================================================
+// checks the FIFO's own rules on every clock cycle, independent of any test.
+// kept out of sync_fifo.v on purpose and attached from outside with bind,
+// so the RTL file stays untouched and this can be reused with any testbench
 
 module fifo_checker (
     input logic clk,
@@ -17,7 +12,7 @@ module fifo_checker (
     input logic empty
 );
 
-    // Rule 1: full and empty can never both be true at the same time.
+    // full and empty should never both be true at once
     property no_full_and_empty;
         @(posedge clk) disable iff (!rst_n)
         !(full && empty);
@@ -25,9 +20,10 @@ module fifo_checker (
     assert property (no_full_and_empty)
     else $error("VIOLATION: full and empty are both high at the same time!");
 
-    // Rule 2: a write attempt while full must not corrupt state.
-    // If wr_en && full this cycle, then full must still be the same
-    // value one cycle later (i.e. nothing was actually written in).
+    // if we try to write while full, full should still be the same
+    // value one cycle later - i.e. nothing actually got written
+    // (checking next cycle here, not this one, since the pointer update
+    // from this edge doesn't show up until the next edge anyway)
     property no_write_when_full;
         @(posedge clk) disable iff (!rst_n)
         (wr_en && full) |=> $stable(full);
@@ -35,7 +31,7 @@ module fifo_checker (
     assert property (no_write_when_full)
     else $error("VIOLATION: write accepted while FIFO was full!");
 
-    // Rule 3: a read attempt while empty must not corrupt state.
+    // same idea for reading from an empty FIFO
     property no_read_when_empty;
         @(posedge clk) disable iff (!rst_n)
         (rd_en && empty) |=> $stable(empty);
@@ -45,8 +41,7 @@ module fifo_checker (
 
 endmodule
 
-// Attach fifo_checker to every instance of sync_fifo, wiring up
-// the signals it needs to observe. No changes to sync_fifo.v itself.
+// attach the checker to every instance of sync_fifo - no edits to sync_fifo.v needed
 bind sync_fifo fifo_checker checker_inst (
     .clk    (clk),
     .rst_n  (rst_n),

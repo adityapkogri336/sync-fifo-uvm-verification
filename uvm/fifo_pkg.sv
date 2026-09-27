@@ -1,13 +1,19 @@
+// fifo_pkg.sv
+// all the UVM classes live here - transaction, sequences, driver, monitor,
+// scoreboard, coverage, and the agent/env/test that glue it together
+
 package fifo_pkg;
     import uvm_pkg::*;
     `include "uvm_macros.svh"
 
     // ---------------- Transaction ----------------
+    // one object = one thing we want the DUT to do (a write or a read)
     class fifo_transaction extends uvm_sequence_item;
         rand bit [7:0] data;
-        rand bit is_write;   // 1 = write operation, 0 = read operation
+        rand bit is_write;   // 1 = write, 0 = read
 
-        // Weight writes more heavily (60%) so reads usually have something to consume
+        // weighting writes higher so the FIFO usually has something in it
+        // when a read comes along, otherwise reads mostly hit an empty FIFO
         constraint is_write_dist {
             is_write dist { 1 := 60, 0 := 40 };
         }
@@ -52,13 +58,14 @@ package fifo_pkg;
             repeat (3) begin
                 tr = fifo_transaction::type_id::create("tr");
                 start_item(tr);
-                tr.is_write = 0;   // no randomize() needed — data field is irrelevant for a read request
+                tr.is_write = 0;   // data field doesn't matter for a read request
                 finish_item(tr);
             end
         endtask
     endclass
 
     // ---------------- Random Mixed Sequence ----------------
+    // fully random - lets both data and is_write get picked by the solver
     class fifo_random_sequence extends uvm_sequence #(fifo_transaction);
         `uvm_object_utils(fifo_random_sequence)
 
@@ -71,13 +78,15 @@ package fifo_pkg;
             repeat (20) begin
                 tr = fifo_transaction::type_id::create("tr");
                 start_item(tr);
-                assert(tr.randomize());   // randomizes BOTH data and is_write now
+                assert(tr.randomize());
                 finish_item(tr);
             end
         endtask
     endclass
 
-    // ---------------- Fill Sequence (forces full=1, closing the coverage hole) ----------------
+    // ---------------- Fill Sequence ----------------
+    // added this after noticing random testing never actually filled the FIFO -
+    // this just hammers 8 writes back to back with no reads so full=1 is guaranteed
     class fifo_fill_sequence extends uvm_sequence #(fifo_transaction);
         `uvm_object_utils(fifo_fill_sequence)
 
@@ -87,7 +96,6 @@ package fifo_pkg;
 
         task body();
             fifo_transaction tr;
-            // DEPTH writes back-to-back, no reads in between, guarantees full=1 at least once
             repeat (8) begin
                 tr = fifo_transaction::type_id::create("tr");
                 start_item(tr);
@@ -99,6 +107,8 @@ package fifo_pkg;
     endclass
 
     // ---------------- Driver ----------------
+    // takes whatever transaction the sequencer hands it and actually
+    // wiggles the DUT pins to make it happen
     class fifo_driver extends uvm_driver #(fifo_transaction);
         `uvm_component_utils(fifo_driver)
 
@@ -116,28 +126,38 @@ package fifo_pkg;
 
         task run_phase(uvm_phase phase);
             fifo_transaction tr;
-            @(posedge vif.rst_n);   // wait until reset is fully released
-            @(posedge vif.clk);     // let one clean clock edge pass before driving anything
+
+            // don't touch anything until reset is actually done
+            @(posedge vif.rst_n);
+            @(posedge vif.clk);
+
             forever begin
                 seq_item_port.get_next_item(tr);
+
+                // the #1 here avoids racing the DUT, which samples wr_en/rd_en
+                // on this exact same edge
                 @(posedge vif.clk);
-                #1;   // avoid racing with the DUT, which samples wr_en/rd_en on this same edge
+                #1;
                 if (tr.is_write) begin
                     vif.wr_en   = 1;
                     vif.wr_data = tr.data;
                 end else begin
                     vif.rd_en = 1;
                 end
+
                 @(posedge vif.clk);
                 #1;
                 vif.wr_en = 0;
                 vif.rd_en = 0;
+
                 seq_item_port.item_done();
             end
         endtask
     endclass
 
     // ---------------- Monitor ----------------
+    // just watches the bus, never drives anything - rebuilds transactions
+    // for the scoreboard and coverage to use
     class fifo_monitor extends uvm_monitor;
         `uvm_component_utils(fifo_monitor)
 
@@ -158,16 +178,23 @@ package fifo_pkg;
         task run_phase(uvm_phase phase);
             fifo_transaction tr;
             bit wr_en_s, rd_en_s, full_s, empty_s;
-            @(posedge vif.rst_n);   // don't observe anything until reset is fully released
+
+            @(posedge vif.rst_n);
+
             forever begin
                 @(posedge vif.clk);
-                // Capture control/status signals exactly as the DUT saw them for THIS edge,
-                // before this same edge's own pointer updates can change full/empty.
+
+                // grab the status flags right at the edge, before this same
+                // edge's own pointer update can change them out from under us
+                // (this was the bug that dropped the last read in a drain -
+                // empty flips to 1 on the exact same edge as the read that causes it)
                 wr_en_s = vif.wr_en;
                 rd_en_s = vif.rd_en;
                 full_s  = vif.full;
                 empty_s = vif.empty;
-                #1;   // now let data outputs (rd_data) settle
+
+                #1;   // now the data outputs have settled, safe to read them
+
                 if (wr_en_s && !full_s) begin
                     tr = fifo_transaction::type_id::create("tr");
                     tr.is_write = 1;
@@ -185,6 +212,7 @@ package fifo_pkg;
     endclass
 
     // ---------------- Scoreboard ----------------
+    // keeps our own queue of what we expect to come out, compares every read
     class fifo_scoreboard extends uvm_scoreboard;
         `uvm_component_utils(fifo_scoreboard)
 
@@ -215,7 +243,9 @@ package fifo_pkg;
         endfunction
     endclass
 
-    // ---------------- Coverage Collector ----------------
+    // ---------------- Coverage ----------------
+    // measures whether we actually hit every state that matters, not just
+    // that stuff ran - the crosses are the important part (full+write, empty+read)
     class fifo_coverage extends uvm_component;
         `uvm_component_utils(fifo_coverage)
 
@@ -263,6 +293,7 @@ package fifo_pkg;
     endclass
 
     // ---------------- Agent ----------------
+    // just bundles driver + monitor + sequencer and wires them together
     class fifo_agent extends uvm_agent;
         `uvm_component_utils(fifo_agent)
 
@@ -287,6 +318,7 @@ package fifo_pkg;
     endclass
 
     // ---------------- Environment ----------------
+    // bundles agent + scoreboard + coverage
     class fifo_env extends uvm_env;
         `uvm_component_utils(fifo_env)
 
@@ -311,6 +343,7 @@ package fifo_pkg;
     endclass
 
     // ---------------- Test ----------------
+    // decides which sequences actually run and in what order
     class fifo_test extends uvm_test;
         `uvm_component_utils(fifo_test)
 
@@ -330,6 +363,7 @@ package fifo_pkg;
             fifo_read_sequence   rd_seq;
             fifo_random_sequence rand_seq;
             fifo_fill_sequence   fill_seq;
+
             phase.raise_objection(this);
 
             wr_seq = fifo_write_sequence::type_id::create("wr_seq");
@@ -341,11 +375,11 @@ package fifo_pkg;
             rand_seq = fifo_random_sequence::type_id::create("rand_seq");
             rand_seq.start(env.agt.seqr);
 
-            // Directed: deliberately force full=1, since random alone didn't reach it
+            // directed on purpose - random alone kept missing full=1
             fill_seq = fifo_fill_sequence::type_id::create("fill_seq");
             fill_seq.start(env.agt.seqr);
 
-            #100;   // give the monitor time to observe the final transaction before ending
+            #100;   // give the monitor time to catch the last transaction
             phase.drop_objection(this);
         endtask
     endclass

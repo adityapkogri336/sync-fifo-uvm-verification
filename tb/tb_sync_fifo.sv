@@ -1,6 +1,10 @@
+// tb_sync_fifo.sv
+// plain directed testbench, no UVM here, just checking the FIFO does what it should
+// basic idea: write some known values in, read them back, make sure they match
+// then hammer it a bit with overflow/underflow to make sure it doesn't break
+
 module tb;
 
-    // Testbench signals — these will drive/observe the DUT's ports
     logic clk;
     logic rst_n;
     logic wr_en;
@@ -10,7 +14,7 @@ module tb;
     logic full;
     logic empty;
 
-    // Instantiate the FIFO design (DUT = Design Under Test)
+    // hook up the FIFO we're testing (DUT)
     sync_fifo #(.DEPTH(8), .WIDTH(8)) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -22,14 +26,14 @@ module tb;
         .empty(empty)
     );
 
-    // Clock generation: toggle every 5 time units -> 10 time unit period
+    // clock - toggles every 5 units so full period is 10
     initial clk = 0;
     always #5 clk = ~clk;
 
-    // Array to hold values we write, so we can check them later
+    // keeping the values we write so we can check them later during overflow test
     logic [7:0] expected_values [0:7];
 
-    // Task: write one value into the FIFO
+    // writes one value in - drive it for one clock then drop wr_en
     task write_data(input [7:0] data);
         @(posedge clk);
         wr_en   = 1;
@@ -38,7 +42,8 @@ module tb;
         wr_en   = 0;
     endtask
 
-    // Task: read one value and self-check against an expected value
+    // reads one value and checks it against what we expect
+    // the #1 here matters - without it we'd read rd_data before it actually updates
     task read_and_check(input [7:0] expected);
         @(posedge clk);
         rd_en = 1;
@@ -51,8 +56,8 @@ module tb;
             $display("PASS at time %0t: got %h as expected", $time, rd_data);
     endtask
 
-    // Test: fill the FIFO completely, attempt one extra "phantom" write,
-    // then drain and confirm no data was corrupted (overflow protection)
+    // fill it all the way up, try to sneak one more write in (should be ignored),
+    // then drain it and check nothing got messed up
     task test_overflow();
         $display("--- Starting overflow test ---");
 
@@ -65,10 +70,9 @@ module tb;
         else
             $display("PASS: full correctly asserted after 8 writes");
 
-        // Attempt a 9th "phantom" write — should be ignored
+        // this write should just get dropped since we're full
         write_data(8'h99);
 
-        // Drain all 8 real values and confirm none were corrupted
         for (int i = 0; i < 8; i++) begin
             read_and_check(expected_values[i]);
         end
@@ -76,7 +80,7 @@ module tb;
         $display("--- Overflow test complete ---");
     endtask
 
-    // Test: attempt to read from an already-empty FIFO (underflow protection)
+    // try to read from an empty FIFO - shouldn't do anything weird
     task test_underflow();
         $display("--- Starting underflow test ---");
 
@@ -85,7 +89,7 @@ module tb;
         else
             $display("PASS: empty correctly asserted");
 
-        // Attempt a "phantom" read — should be ignored, rd_data should hold last value
+        // phantom read - rd_data should just stay whatever it was
         @(posedge clk);
         rd_en = 1;
         @(posedge clk);
@@ -97,13 +101,12 @@ module tb;
     endtask
 
     initial begin
-        // Initialize all inputs to known values
         rst_n   = 0;
         wr_en   = 0;
         rd_en   = 0;
         wr_data = 0;
 
-        // Set up expected values for the overflow/underflow tests
+        // values we'll use for the overflow test later
         expected_values[0] = 8'h01;
         expected_values[1] = 8'h02;
         expected_values[2] = 8'h03;
@@ -113,14 +116,11 @@ module tb;
         expected_values[6] = 8'h07;
         expected_values[7] = 8'h08;
 
-        // Hold reset for a couple clock cycles
         #12;
         rst_n = 1;
-
-        // Wait for a real clock edge before starting normal operation
         #10;
 
-        // --- Basic directed test: write 3, read 3, check order ---
+        // basic sanity check first - write 3, read 3, order should hold
         write_data(8'hAA);
         write_data(8'hBB);
         write_data(8'hCC);
@@ -129,7 +129,7 @@ module tb;
         read_and_check(8'hBB);
         read_and_check(8'hCC);
 
-        // --- Corner case tests ---
+        // now the corner cases
         test_overflow();
         test_underflow();
 
